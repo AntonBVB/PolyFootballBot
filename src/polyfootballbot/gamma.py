@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from .market_classifier import classify_market_type, classify_outcome_role, is_tradeable_outcome, market_format_from_type
-from .models import DiscoveryBundle, EventRecord, MarketRecord, MarketType, OutcomeRecord
+from .models import DiscoveryBundle, EventRecord, MarketRecord, MarketType, OutcomeRecord, OutcomeRole
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,6 @@ class GammaClient:
         return payload
 
 
-
 def parse_clob_token_ids(raw_token_ids: Any) -> list[str]:
     if raw_token_ids is None:
         return []
@@ -56,28 +55,32 @@ def parse_clob_token_ids(raw_token_ids: Any) -> list[str]:
     raise GammaError("Unsupported clobTokenIds format")
 
 
-
 def _parse_start_time(raw: str) -> datetime:
     return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
 
+
+def _outcome_name(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("name", "")).strip()
+    return str(item).strip()
 
 
 def normalize_market(payload: dict[str, Any]) -> DiscoveryBundle | None:
     event = payload.get("event") or {}
     home_team = str(event.get("homeTeam") or payload.get("homeTeam") or "").strip()
     away_team = str(event.get("awayTeam") or payload.get("awayTeam") or "").strip()
+
     outcomes = payload.get("outcomes") or []
-    outcome_names = [str(item.get("name") or item) for item in outcomes]
+    outcome_names = [_outcome_name(item) for item in outcomes]
+
     market_type = classify_market_type(str(payload.get("question", "")), outcome_names)
     if market_type == MarketType.OTHER:
         return None
+
     if market_type == MarketType.BINARY_HOME_WIN:
         normalized_question = str(payload.get("question", "")).lower()
         if away_team and normalized_question.startswith(f"will {away_team.lower()}"):
             market_type = MarketType.BINARY_AWAY_WIN
-    if market_type == MarketType.THREE_WAY_HOME:
-        # Home/draw/away are encoded outcome-by-outcome below.
-        pass
 
     event_id = str(event.get("id") or payload.get("eventId") or payload.get("slug") or payload.get("id"))
     event_record = EventRecord(
@@ -110,19 +113,27 @@ def normalize_market(payload: dict[str, Any]) -> DiscoveryBundle | None:
 
     token_ids = parse_clob_token_ids(payload.get("clobTokenIds"))
     outcome_records: list[OutcomeRecord] = []
+
     for index, outcome in enumerate(outcomes):
         if isinstance(outcome, dict):
-            outcome_name = str(outcome.get("name", "")).strip()
-            token_id = str(outcome.get("clobTokenId") or outcome.get("token_id") or token_ids[index] if index < len(token_ids) else "")
+            outcome_name = _outcome_name(outcome)
+            token_id = str(
+                outcome.get("clobTokenId")
+                or outcome.get("token_id")
+                or (token_ids[index] if index < len(token_ids) else "")
+            )
             no_token_id = outcome.get("noTokenId")
         else:
-            outcome_name = str(outcome).strip()
+            outcome_name = _outcome_name(outcome)
             token_id = token_ids[index] if index < len(token_ids) else ""
             no_token_id = None
+
         if not token_id:
             continue
+
         role = classify_outcome_role(outcome_name, home_team, away_team)
         outcome_market_type = market_type
+
         if market_type == MarketType.THREE_WAY_HOME:
             if role == OutcomeRole.HOME:
                 outcome_market_type = MarketType.THREE_WAY_HOME
@@ -130,6 +141,7 @@ def normalize_market(payload: dict[str, Any]) -> DiscoveryBundle | None:
                 outcome_market_type = MarketType.THREE_WAY_AWAY
             elif role == OutcomeRole.DRAW:
                 outcome_market_type = MarketType.THREE_WAY_DRAW
+
         outcome_records.append(
             OutcomeRecord(
                 outcome_id=f"{market_id}:{index}:{role.value}",
