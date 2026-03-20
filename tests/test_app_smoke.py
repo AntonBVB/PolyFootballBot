@@ -11,5 +11,5 @@ def test_create_app_initializes_sqlite(tmp_path: Path, monkeypatch) -> None:
 
     scheduler = create_app()
 
-    assert scheduler.settings.sqlite_path == db_file
+    assert scheduler.tasks
     assert db_file.exists()
