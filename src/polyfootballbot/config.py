@@ -53,14 +53,12 @@ class Settings:
     http_timeout_seconds: float
 
 
-
 def _read_float(name: str, default: str) -> float:
     raw = os.getenv(name, default)
     try:
         return float(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} must be a float, got {raw}") from exc
-
 
 
 def _read_int(name: str, default: str) -> int:
@@ -70,6 +68,13 @@ def _read_int(name: str, default: str) -> int:
     except ValueError as exc:
         raise ConfigError(f"{name} must be an int, got {raw}") from exc
 
+
+def _read_optional_str(name: str) -> str | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None
 
 
 def load_settings() -> Settings:
@@ -91,8 +96,8 @@ def load_settings() -> Settings:
         log_level=log_level,
         polymarket_host=os.getenv("POLYMARKET_HOST", "https://clob.polymarket.com"),
         gamma_base_url=os.getenv("GAMMA_BASE_URL", "https://gamma-api.polymarket.com"),
-        private_key=os.getenv("PRIVATE_KEY"),
-        funder=os.getenv("FUNDER"),
+        private_key=_read_optional_str("PRIVATE_KEY"),
+        funder=_read_optional_str("FUNDER"),
         signature_type=_read_int("SIGNATURE_TYPE", "2"),
         chain_id=_read_int("CHAIN_ID", "137"),
         entry_min=_read_float("ENTRY_MIN", "0.73"),
@@ -119,7 +124,11 @@ def load_settings() -> Settings:
         raise ConfigError("OPEN_WINDOW_HOURS must be positive")
 
     if settings.app_mode is AppMode.LIVE:
-        missing = [name for name in _REQUIRED_IN_LIVE if not os.getenv(name)]
+        missing = []
+        if not settings.private_key:
+            missing.append("PRIVATE_KEY")
+        if not settings.funder:
+            missing.append("FUNDER")
         if missing:
             raise ConfigError(f"Missing required live settings: {', '.join(missing)}")
 
