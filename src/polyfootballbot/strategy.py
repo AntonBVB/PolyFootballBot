@@ -7,10 +7,28 @@ import logging
 from .clob import CLOBGateway
 from .config import Settings
 from .db import Database
-from .models import EntryCandidate, OrderIntent, OrderKind, OrderSide, OrderStatus, PositionRecord, PositionStatus, TradeableOutcome, round_down
+from .models import (
+    EntryCandidate,
+    OrderIntent,
+    OrderKind,
+    OrderSide,
+    OrderStatus,
+    PositionRecord,
+    PositionStatus,
+    TradeableOutcome,
+    round_down,
+)
 from .orderbook import extract_book_top
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 @dataclass
@@ -51,7 +69,6 @@ class EntryEngine:
         if book.best_ask is None or book.best_bid is None or book.spread is None:
             logger.info("BOOK_FETCH_FAILED token_id=%s reason=empty_book", outcome.tradable_token_id)
             return None
-        # BUY NO entry uses the ask of the NO asset and later exits by selling the exact same NO asset.
         entry_price = round_down(book.best_ask, outcome.tick_size)
         if not (self.settings.entry_min <= entry_price <= self.settings.entry_max):
             return None
@@ -79,7 +96,13 @@ class EntryEngine:
         self.db.record_order(intent, result)
         if result.status in {OrderStatus.OPEN, OrderStatus.FILLED} and result.filled_size > 0:
             self.db.open_position_from_fill(intent, result)
-            logger.info("BUY_NO_ENTRY market_id=%s token_id=%s shares=%s price=%s", intent.market_id, intent.token_id, result.filled_size, intent.price)
+            logger.info(
+                "BUY_NO_ENTRY market_id=%s token_id=%s shares=%s price=%s",
+                intent.market_id,
+                intent.token_id,
+                result.filled_size,
+                intent.price,
+            )
         else:
             logger.info("ENTRY_REJECTED market_id=%s token_id=%s status=%s", intent.market_id, intent.token_id, result.status.value)
 
@@ -105,8 +128,7 @@ class ExitEngine:
         exit_kind = None
         if book.best_bid >= position.entry_price + self.settings.take_profit_delta:
             exit_kind = OrderKind.TP
-        elif position.opened_at and now >= position.opened_at:
-            # Protective exit uses the same outcome/token as the BUY NO entry whenever the prematch window has ended.
+        elif (opened_at := _ensure_utc(position.opened_at)) and now >= opened_at:
             exit_kind = OrderKind.PROTECTIVE_EXIT
         if exit_kind is None:
             return

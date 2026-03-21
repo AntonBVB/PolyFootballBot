@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from .clob import CLOBGateway
 from .config import Settings, load_settings
@@ -33,14 +34,63 @@ class NullExchangeClient:
         return {"id": order_id, "status": "FILLED", "filledSize": 1.0}
 
 
+class PolymarketExchangeClient:
+    def __init__(self, client: Any, signature_type: int) -> None:
+        self._client = client
+        self._signature_type = signature_type
+
+    def get_balance_allowance(self, params):
+        from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+        return self._client.get_balance_allowance(
+            BalanceAllowanceParams(
+                asset_type=AssetType.COLLATERAL,
+                signature_type=self._signature_type if params.signature_type is None else params.signature_type,
+            )
+        )
+
+    def create_order(self, order_args):
+        from py_clob_client.clob_types import OrderArgs
+
+        return self._client.create_order(OrderArgs(**order_args))
+
+    def post_order(self, signed_order, order_type="GTC"):
+        return self._client.post_order(signed_order, order_type)
+
+    def get_order_book(self, token_id: str):
+        return self._client.get_order_book(token_id)
+
+    def get_order(self, order_id: str):
+        return self._client.get_order(order_id)
+
+
+def build_exchange_client(settings: Settings, exchange_client=None):
+    if exchange_client is not None:
+        return exchange_client
+    if settings.app_mode.value == "dry-run":
+        return NullExchangeClient()
+
+    from py_clob_client.client import ClobClient
+
+    client = ClobClient(
+        host=settings.polymarket_host,
+        chain_id=settings.chain_id,
+        key=settings.private_key,
+        signature_type=settings.signature_type,
+        funder=settings.funder,
+    )
+    client.set_api_creds(client.create_or_derive_api_creds())
+    logger.info("LIVE_EXCHANGE_CLIENT_READY host=%s chain_id=%s", settings.polymarket_host, settings.chain_id)
+    return PolymarketExchangeClient(client=client, signature_type=settings.signature_type)
+
 
 def build_scheduler(settings: Settings, exchange_client=None) -> Scheduler:
     configure_logging(settings.log_level)
     repo_root = Path(__file__).resolve().parents[2]
     db = Database(settings.sqlite_path, repo_root / "db" / "schema.sql")
-    exchange_client = exchange_client or NullExchangeClient()
+    exchange = build_exchange_client(settings, exchange_client=exchange_client)
     clob = CLOBGateway(
-        client=exchange_client,
+        client=exchange,
         signature_type=settings.signature_type,
         funder=settings.funder,
         dry_run=settings.app_mode.value == "dry-run",
@@ -61,10 +111,8 @@ def build_scheduler(settings: Settings, exchange_client=None) -> Scheduler:
     return Scheduler(tasks=tasks)
 
 
-
 def create_app() -> Scheduler:
     return build_scheduler(load_settings())
-
 
 
 def main() -> None:

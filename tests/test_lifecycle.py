@@ -74,3 +74,25 @@ def test_buy_no_then_sell_same_no_token(monkeypatch, tmp_path: Path) -> None:
     assert client.orders[0]["token_id"] == "no-1"
     assert client.orders[1]["side"] == OrderSide.SELL.value
     assert client.orders[1]["token_id"] == "no-1"
+
+
+def test_exit_monitor_treats_naive_db_timestamps_as_utc(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "tz.db"))
+    monkeypatch.setenv("APP_MODE", "live")
+    monkeypatch.setenv("PRIVATE_KEY", "0xabc")
+    monkeypatch.setenv("FUNDER", "0xdef")
+    settings = load_settings()
+    db = Database(settings.sqlite_path, Path("db/schema.sql"))
+    _seed_tradeable_market(db)
+    client = StubClient()
+    clob = CLOBGateway(client=client, signature_type=settings.signature_type, funder=settings.funder, dry_run=False)
+
+    EntryEngine(settings=settings, db=db, clob=clob).scan()
+    with db.connect() as conn:
+        conn.execute("UPDATE positions SET opened_at = '2026-03-21 00:00:00' WHERE token_id = ?", ("no-1",))
+
+    ExitEngine(settings=settings, db=db, clob=clob).monitor(now=datetime(2026, 3, 21, 0, 1, tzinfo=timezone.utc))
+
+    assert len(client.orders) == 2
+    assert client.orders[1]["side"] == OrderSide.SELL.value
+    assert client.orders[1]["token_id"] == "no-1"
